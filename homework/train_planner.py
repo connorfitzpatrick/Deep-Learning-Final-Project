@@ -31,6 +31,8 @@ def train():
         total_loss = 0.0
 
         for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
+            print(f"epoch: {epoch}, batch keys: {list(batch.keys())}")
+
             track_left = batch["track_left"].to(device)         # (B, 10, 2)
             track_right = batch["track_right"].to(device)       # (B, 10, 2)
             waypoints = batch["waypoints"].to(device)           # (B, 3, 2)

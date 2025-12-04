@@ -3,7 +3,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-HOMEWORK_DIR = Path(__file__).resolve().parent
+import os
+HOMEWORK_DIR = Path(os.getcwd())  # works in Colab and CLI
 INPUT_MEAN = [0.2788, 0.2657, 0.2629]
 INPUT_STD = [0.2064, 0.1944, 0.2252]
 
