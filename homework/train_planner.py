@@ -7,64 +7,89 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from homework.models import MLPPlanner, TransformerPlanner, save_model
+from homework.models import load_model, save_model
 from homework.metrics import PlannerMetric
 from homework.datasets.road_dataset import load_data
 
 
-def train():
-    device = torch.device("cpu")  # Force CPU to avoid MPS crash on Mac
+def train(model_name="transformer_planner"):
+    print(f"\n==============================")
+    print(f"TRAINING MODEL: {model_name}")
+    print(f"==============================\n")
 
-    # Load training and validation data (structured inputs only)
-    train_loader = load_data("drive_data/train", transform_pipeline="state_only", shuffle=True, batch_size=32)
-    val_loader = load_data("drive_data/val", transform_pipeline="state_only", shuffle=False, batch_size=32)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize model, optimizer, and masked L1 loss
-    model = TransformerPlanner(n_track=10, n_waypoints=3).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)  # smaller LR for stability
-    loss_fn = nn.L1Loss(reduction="none")  # we'll apply mask manually
+    # Load data
+    train_loader = load_data(
+        "drive_data/train",
+        transform_pipeline="state_only" if model_name != "cnn_planner" else "image_only",
+        shuffle=True,
+        batch_size=32,
+    )
+
+    val_loader = load_data(
+        "drive_data/val",
+        transform_pipeline="state_only" if model_name != "cnn_planner" else "image_only",
+        shuffle=False,
+        batch_size=32,
+    )
+
+    # Load correct model
+    model = load_model(model_name).to(device)
+
+    # Optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    # Loss for structured models
+    loss_fn = nn.L1Loss(reduction="none")
 
     best_val_error = float("inf")
 
-    for epoch in range(45):  # Train longer for better convergence
+    for epoch in range(20):
         model.train()
         total_loss = 0.0
 
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
-            print(f"epoch: {epoch}, batch keys: {list(batch.keys())}")
-
-            track_left = batch["track_left"].to(device)         # (B, 10, 2)
-            track_right = batch["track_right"].to(device)       # (B, 10, 2)
-            waypoints = batch["waypoints"].to(device)           # (B, 3, 2)
-            mask = batch["waypoints_mask"].to(device)           # (B, 3)
-
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
             optimizer.zero_grad()
-            preds = model(track_left=track_left, track_right=track_right)
 
-            loss = loss_fn(preds, waypoints)                    # (B, 3, 2)
-            loss = loss * mask.unsqueeze(-1)                   # apply mask: (B, 3, 1)
-            loss = loss.sum() / mask.sum()                     # average over valid values
+            if model_name == "cnn_planner":
+                # CNN uses images instead of lane boundaries
+                images = batch["image"].to(device)
+                preds = model(images)
+                waypoints = batch["waypoints"].to(device)
+                mask = batch["waypoints_mask"].to(device)
+            else:
+                # MLP + Transformer use structured state inputs
+                track_left = batch["track_left"].to(device)
+                track_right = batch["track_right"].to(device)
+                preds = model(track_left=track_left, track_right=track_right)
+                waypoints = batch["waypoints"].to(device)
+                mask = batch["waypoints_mask"].to(device)
+
+            loss = loss_fn(preds, waypoints)
+            loss = (loss * mask.unsqueeze(-1)).sum() / mask.sum()
 
             loss.backward()
             optimizer.step()
-
             total_loss += loss.item()
 
         avg_train_loss = total_loss / len(train_loader)
-        print(f"Epoch {epoch + 1}: Avg Train Loss = {avg_train_loss:.4f}")
+        print(f"Epoch {epoch+1}: Avg Train Loss = {avg_train_loss:.4f}")
 
-        # ------------------ Validation ------------------
+        # Validation
         model.eval()
         metric = PlannerMetric()
         with torch.no_grad():
             for batch in val_loader:
-                track_left = batch["track_left"].to(device)
-                track_right = batch["track_right"].to(device)
-                waypoints = batch["waypoints"].to(device)
-                mask = batch["waypoints_mask"].to(device)
+                if model_name == "cnn_planner":
+                    preds = model(batch["image"].to(device))
+                else:
+                    preds = model(
+                        track_left=batch["track_left"].to(device),
+                        track_right=batch["track_right"].to(device),
+                    )
 
-                preds = model(track_left=track_left, track_right=track_right)
-                metric.add(preds, waypoints, mask)
+                metric.add(preds, batch["waypoints"].to(device), batch["waypoints_mask"].to(device))
 
         val_scores = metric.compute()
         print(
@@ -73,11 +98,11 @@ def train():
             f"Lateral: {val_scores['lateral_error']:.4f}"
         )
 
-        # Save best model
+        # Save best checkpoint
         if val_scores["l1_error"] < best_val_error:
             best_val_error = val_scores["l1_error"]
             save_path = save_model(model)
-            print(f"Saved better model to: {save_path}")
+            print(f"Saved model to: {save_path}")
 
 
 if __name__ == "__main__":

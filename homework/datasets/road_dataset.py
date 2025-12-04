@@ -45,6 +45,12 @@ class RoadDataset(Dataset):
                     road_transforms.EgoTrackProcessor(self.track),
                 ]
             )
+        elif transform_pipeline == "image_only":
+            xform = road_transforms.Compose(
+                [
+                    road_transforms.ImageLoader(self.episode_path),
+                ]
+            )
         elif transform_pipeline == "state_only":
             # track_left, track_right, waypoints, waypoints_mask
             xform = road_transforms.EgoTrackProcessor(self.track)
